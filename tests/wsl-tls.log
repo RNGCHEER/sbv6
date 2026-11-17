@@ -1,0 +1,9 @@
+PASS mixed certificate sources: each protocol exports its actual SNI and SPKI pin without insecure=true
+PASS real IPv6 Trojan TLS handshake using exported SPKI pin; curl -k applies only to the local HTTPS test destination
+PASS upstream change_config SNI management regenerates certificates and synchronizes client output
+PASS upstream client-fingerprint management persists across subsequent exports
+PASS rejected TLS change restores prior certificate and node configuration
+PASS Naive certificate uses the upstream 200-day certificate lifecycle
+PASS expired Naive certificate renewed by upstream ssl_certificate without overwriting its original source
+PASS native node management edits node names and advertised addresses while preserving container binding
+PASS native node management changes listening ports with upstream mode selection and confirmation

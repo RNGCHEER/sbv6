@@ -1,0 +1,69 @@
+
+请选择需要添加的协议：
+  a. 全部协议（默认）
+  b. XTLS + reality
+  c. hysteria2
+  d. tuic
+  e. ShadowTLS
+  f. shadowsocks
+  g. trojan
+  h. vmess + ws
+  i. vless + ws + tls
+  j. H2 + reality
+  k. gRPC + reality
+  l. AnyTLS
+  m. naive
+  n. Snell v6
+  0. 取消
+支持组合选择，例如 bc = Reality + Hysteria2，f = Shadowsocks。
+选择无效，请输入 a、b-n 的任意组合或 0 取消。
+
+已选择： [XTLS + reality] [hysteria2]
+
+请选择需要添加的协议：
+  a. 全部协议（默认）
+  b. XTLS + reality
+  c. hysteria2
+  d. tuic
+  e. ShadowTLS
+  f. shadowsocks
+  g. trojan
+  h. vmess + ws
+  i. vless + ws + tls
+  j. H2 + reality
+  k. gRPC + reality
+  l. AnyTLS
+  m. naive
+  n. Snell v6
+  0. 取消
+支持组合选择，例如 bc = Reality + Hysteria2，f = Shadowsocks。
+
+已选择： [XTLS + reality] [hysteria2] [tuic] [ShadowTLS] [shadowsocks] [trojan] [vmess + ws] [vless + ws + tls] [H2 + reality] [gRPC + reality] [AnyTLS] [naive] [Snell v6]
+
+请选择需要添加的协议：
+  a. 全部协议（默认）
+  b. XTLS + reality
+  c. hysteria2
+  d. tuic
+  e. ShadowTLS
+  f. shadowsocks
+  g. trojan
+  h. vmess + ws
+  i. vless + ws + tls
+  j. H2 + reality
+  k. gRPC + reality
+  l. AnyTLS
+  m. naive
+  n. Snell v6
+  0. 取消
+支持组合选择，例如 bc = Reality + Hysteria2，f = Shadowsocks。
+已取消添加
+
+添加 / 删除协议
+  1. 添加 IPv4 协议
+  2. 添加 IPv6 协议
+  3. 双栈添加协议
+  4. 删除已配置节点
+  0. 返回
+Selected address family: 6
+PASS protocol labels, invalid-input retry, combination deduplication, default-all, cancellation and protocol-manager routing

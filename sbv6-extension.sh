@@ -280,11 +280,11 @@ v6_generate() (
   done
   printf '%s\n' "$address" > "$WORK_DIR/host"
 )
-v6_export() (
-  local family=$1
-  WORK_DIR="$V6_HOME/v$family"; [ -d "$WORK_DIR/conf" ] || exit 0
+v6_export_one() (
+  WORK_DIR=$1; SBV6_TLS_SNI=$2
   TEMP_DIR=$V6_TMP; L=C; IS_SUB=no_sub; IS_ARGO=no_argo; IS_BRUTAL=false
   SBV6_NATIVE_EXPORT=1
+  [ ! -s "$WORK_DIR/client-fingerprint" ] || FINGER_PRINT=$(cat "$WORK_DIR/client-fingerprint")
   DIR=$WORK_DIR
   echo '{"experimental":{"clash_api":{}}}' > "$WORK_DIR/conf/04_experimental.json"
   echo '{"outbounds":["<OUTBOUND_REPLACE>",{"type":"direct","tag":"direct"}]}' > "$TEMP_DIR/sing-box-template"
@@ -294,8 +294,76 @@ v6_export() (
   # Tags must retain the upstream protocol suffix for its reader.
   export_list
 )
+v6_renew_naive() {
+  local file=$1 dir=$2 json cert key sni managed
+  json=$(sed '/^[[:space:]]*\/\//d' "$file")
+  jq -e 'any(.inbounds[]; .type=="naive")' <<< "$json" >/dev/null || return 0
+  cert=$(jq -r '.inbounds[]|select(.type=="naive")|.tls.certificate_path' <<< "$json")
+  key=$(jq -r '.inbounds[]|select(.type=="naive")|.tls.key_path' <<< "$json")
+  [ -r "$cert" ] && [ -r "$key" ] || return 1
+  openssl x509 -checkend 0 -noout -in "$cert" >/dev/null 2>&1 && return 0
+  sni=$(jq -r '.inbounds[]|select(.type=="naive")|.tls.server_name // empty' <<< "$json")
+  [ -n "$sni" ] || sni=$(openssl x509 -noout -ext subjectAltName -in "$cert" | awk -F'DNS:' '/DNS:/{sub(/,.*/,"",$2);print $2}')
+  [ -n "$sni" ] || return 1
+  managed="$dir/renewed-naive"; mkdir -p "$managed/cert"
+  # Renew an sbv6-owned copy, even if follow mode originally used an upstream path.
+  cp "$cert" "$managed/cert/cert.pem"; cp "$cert" "$managed/cert/cert_200.pem"; cp "$key" "$managed/cert/private.key"
+  ( WORK_DIR=$managed; ssl_certificate "$sni" naive_only ) || return
+  cp "$file" "$V6_TMP/naive-before.json"
+  grep '^[[:space:]]*//' "$file" > "$V6_TMP/naive-renew.json" || :
+  jq --arg d "$managed" '.inbounds |= map(if .type=="naive" then .tls.certificate_path=($d+"/cert/cert_200.pem")|.tls.key_path=($d+"/cert/private.key") else . end)' <<< "$json" |
+    sed -E 's/^([[:space:]]*"[^"]+":) /\1/' >> "$V6_TMP/naive-renew.json" || return
+  cp "$V6_TMP/naive-renew.json" "$file"
+  v6_merge || { cp "$V6_TMP/naive-before.json" "$file"; return 1; }
+}
+v6_export() (
+  local family=$1 dir="$V6_HOME/v$1" file stage json cert key sni index=0 output clients=()
+  [ -d "$dir/conf" ] || exit 0
+  mkdir -p "$dir/subscribe"
+  : > "$dir/list"; : > "$dir/nodes.txt"; : > "$dir/shadowrocket.txt"; : > "$dir/throne.txt"
+  echo 'proxies:' > "$dir/clash.yaml"
+  for file in "$dir"/conf/*_inbounds.json; do
+    [ -f "$file" ] || continue
+    v6_renew_naive "$file" "$dir" || exit 1
+    stage="$V6_TMP/export-$family-$((++index))"
+    mkdir -p "$stage/conf" "$stage/cert" "$stage/subscribe"
+    cp "$file" "$stage/conf/"
+    cp "$dir/host" "$stage/host"
+    [ ! -s "$dir/client-fingerprint" ] || cp "$dir/client-fingerprint" "$stage/"
+    ln -sf "$V6_CORE" "$stage/sing-box"; ln -sf "$(command -v jq)" "$stage/jq"
+    json=$(sed '/^[[:space:]]*\/\//d' "$file")
+    cert=$(jq -r '[.inbounds[].tls.certificate_path // empty][0] // empty' <<< "$json")
+    key=$(jq -r '[.inbounds[].tls.key_path // empty][0] // empty' <<< "$json")
+    sni=$(jq -r '[.inbounds[] | .tls.server_name // .handshake.server // empty][0] // empty' <<< "$json")
+    # The exporter must pin the certificate actually served by this protocol,
+    # including when follow mode references a certificate in the upstream tree.
+    if [ -n "$cert" ]; then
+      [ -r "$cert" ] || { v6_error "节点证书不存在：$cert"; exit 1; }
+      cp "$cert" "$stage/cert/cert.pem"; cp "$cert" "$stage/cert/cert_200.pem"
+      [ -z "$key" ] || cp "$key" "$stage/cert/private.key" || exit 1
+    else
+      cp "$dir/cert/"*.pem "$stage/cert/" 2>/dev/null || :
+      [ ! -f "$dir/cert/private.key" ] || cp "$dir/cert/private.key" "$stage/cert/"
+    fi
+    [ -n "$sni" ] || sni=$(openssl x509 -noout -ext subjectAltName -in "$stage/cert/cert.pem" 2>/dev/null | awk -F'DNS:' '/DNS:/ {sub(/,.*/,"",$2);print $2}')
+    sni=${sni:-addons.mozilla.org}
+    v6_export_one "$stage" "$sni" > "$stage/display" || exit 1
+    cat "$stage/display"
+    cat "$stage/list" >> "$dir/list"
+    cat "$stage/nodes.txt" >> "$dir/nodes.txt"
+    cat "$stage/shadowrocket.txt" >> "$dir/shadowrocket.txt"
+    cat "$stage/throne.txt" >> "$dir/throne.txt"
+    sed '/^proxies:/d' "$stage/clash.yaml" >> "$dir/clash.yaml"
+    clients+=("$stage/subscribe/sing-box")
+  done
+  base64 -w0 "$dir/nodes.txt" > "$dir/subscription.txt"
+  if [ ${#clients[@]} -gt 0 ]; then
+    jq -s '{outbounds:([.[].outbounds[] | select(.type!="direct")]+[{type:"direct",tag:"direct"}])}' "${clients[@]}" > "$dir/subscribe/sing-box"
+  else echo '{"outbounds":[{"type":"direct","tag":"direct"}]}' > "$dir/subscribe/sing-box"; fi
+)
 v6_outputs() {
-  v6_export 4; v6_export 6
+  v6_export 4 || return
+  v6_export 6 || return
   cat "$V6_HOME"/v[46]/nodes.txt 2>/dev/null > "$V6_HOME/nodes.txt"
   base64 -w0 "$V6_HOME/nodes.txt" > "$V6_HOME/subscription.txt"
   printf '\nBase64 订阅：\n'; cat "$V6_HOME/subscription.txt"; echo
@@ -322,6 +390,36 @@ v6_clear_firewall() {
     "$cmd" -w -D "${rule[@]:1}" || return
   done < <("$cmd" -w -S INPUT 2>/dev/null)
 }
+v6_select_protocols() {
+  local value=${1:-} i letter key selected='' names=() interactive=0
+  if [ -z "$value" ]; then
+    interactive=1
+    printf '\n请选择需要添加的协议：\n  a. 全部协议（默认）\n'
+    for i in "${!PROTOCOL_LIST[@]}"; do
+      printf -v letter '%b' "\\$(printf '%03o' "$((i+98))")"
+      printf '  %s. %s\n' "$letter" "${PROTOCOL_LIST[i]}"
+    done
+    printf '  0. 取消\n支持组合选择，例如 bc = Reality + Hysteria2，f = Shadowsocks。\n'
+  fi
+  while :; do
+    if [ "$interactive" = 1 ]; then read -r -p '请选择协议 [a]: ' value || return 1; fi
+    value=${value,,}; value=${value//[[:space:],]/}
+    [ -n "$value" ] || value=a
+    [ "$value" != 0 ] || { echo '已取消添加'; return 1; }
+    [ "$value" != a ] || value=bcdefghijklmn
+    if [[ "$value" =~ ^[b-n]+$ ]]; then break; fi
+    printf '%s\n' '选择无效，请输入 a、b-n 的任意组合或 0 取消。' >&2
+    [ "$interactive" = 1 ] || return 1
+  done
+  for ((i=0;i<${#value};i++)); do
+    key=${value:i:1}
+    [[ "$selected" = *"$key"* ]] && continue
+    selected+=$key
+    names+=("${PROTOCOL_LIST[$(printf '%d' "'$key")-98]}")
+  done
+  V6_SELECTED_PROTOCOLS=$selected
+  printf '\n已选择：'; printf ' [%s]' "${names[@]}"; printf '\n'
+}
 v6_add() {
   local family=$1 addr host6 host4 bind6 keys=${V6_PROTOCOLS:-} port=${V6_PORT:-} name=${V6_NAME:-$(hostname)} f p max
   if [ "$family" != 4 ]; then
@@ -334,9 +432,8 @@ v6_add() {
     host4=$V6_SELECTED_HOST
     printf 'IPv4 节点地址已自动填入：%s\n' "$host4"
   fi
-  [ -n "$keys" ] || read -r -p '协议 b-n，a=全部 [a]: ' keys
-  [ "${keys:-a}" != a ] || keys=bcdefghijklmn
-  [[ "$keys" =~ ^[b-n]+$ ]] || { v6_error '协议字母无效'; return 1; }
+  v6_select_protocols "$keys" || return
+  keys=$V6_SELECTED_PROTOCOLS
   [ -n "$port" ] || read -r -p '起始端口 [35000]: ' port
   port=${port:-35000}; [[ "$port" =~ ^[0-9]+$ ]] && ((port>0 && port+${#keys}<65536)) || return 1
   # Conservatively skip any occupied block; a dual-stack pair may share each port.
@@ -385,7 +482,97 @@ v6_sync() {
     sed '/^[[:space:]]*\/\//d' "$file" | jq --arg a "$addr" '.inbounds |= map(if .listen_port then .listen=$a else . end)' | sed -E 's/^([[:space:]]*"[^"]+":) /\1/' >> "$V6_TMP/patch" || return
     mv "$V6_TMP/patch" "$file"
   done
-  echo "$V6_SELECTED_HOST" > "$V6_HOME/v6/host"; echo "$addr" > "$V6_HOME/v6/bind"; v6_merge && v6_firewall
+  if [ -s "$V6_HOME/v6/advertised-host.override" ]; then cat "$V6_HOME/v6/advertised-host.override" > "$V6_HOME/v6/host"
+  else echo "$V6_SELECTED_HOST" > "$V6_HOME/v6/host"; fi
+  echo "$addr" > "$V6_HOME/v6/bind"; v6_merge && v6_firewall
+}
+v6_delete_nodes() {
+  local files=() file i=0 id answer
+  mapfile -t files < <(find "$V6_HOME" -path '*/conf/*_inbounds.json' -type f | sort)
+  if [ ${#files[@]} = 0 ]; then echo '暂无可删除的节点'; return; fi
+  for file in "${files[@]}"; do
+    printf '%s. %s  ' "$((++i))" "$([ "$file" = "${file/v4/}" ] && echo IPv6 || echo IPv4)"
+    sed '/^[[:space:]]*\/\//d' "$file" | jq -r '.inbounds[0] | .tag+"  端口:"+(.listen_port|tostring)'
+  done
+  read -r -p '删除编号（0取消）: ' id
+  if [[ "$id" =~ ^[1-9][0-9]*$ ]] && ((id<=${#files[@]})); then
+    read -r -p '确认删除？[y/N]: ' answer
+    if [ "$answer" = y ]; then cp "${files[id-1]}" "$V6_TMP/deleted"; rm "${files[id-1]}"; if v6_merge; then v6_firewall; else cp "$V6_TMP/deleted" "${files[id-1]}"; fi; fi
+  fi
+}
+v6_protocol_manager() {
+  local choice
+  printf '\n添加 / 删除协议\n  1. 添加 IPv4 协议\n  2. 添加 IPv6 协议\n  3. 双栈添加协议\n  4. 删除已配置节点\n  0. 返回\n'
+  read -r -p '请选择: ' choice
+  case "$choice" in 1) v6_add 4;; 2) v6_add 6;; 3) v6_add both;; 4) v6_delete_nodes;; 0) return;; *) echo '选择无效';; esac
+}
+v6_toggle_service() {
+  if [ -d /run/systemd/system ]; then
+    if systemctl is-active --quiet sbv6; then systemctl stop sbv6 && echo 'sbv6 已关闭'
+    else systemctl start sbv6 && echo 'sbv6 已开启'; fi
+  else
+    if rc-service sbv6 status >/dev/null 2>&1; then rc-service sbv6 stop; else rc-service sbv6 start; fi
+  fi
+}
+v6_update_script() {
+  curl -q -fL --retry 0 --connect-timeout 10 --max-time 60 "https://raw.githubusercontent.com/RNGCHEER/sbv6/main/sbv6.sh?v=$(date +%s)" -o "$V6_TMP/update.sh" || return
+  bash -n "$V6_TMP/update.sh" || return
+  grep -q '^v6_main()' "$V6_TMP/update.sh" || { v6_error '下载内容不是 sbv6 脚本'; return 1; }
+  cp "$V6_TMP/update.sh" "$V6_HOME/sbv6.sh.new" && mv "$V6_HOME/sbv6.sh.new" "$V6_HOME/sbv6.sh"
+  echo '脚本已更新，退出后重新输入 sbv6 使用新版。'
+}
+v6_apply_tls_paths() {
+  local dir=$1 sni=$2 file
+  for file in "$dir"/conf/*_inbounds.json; do
+    [ -f "$file" ] || continue
+    grep '^[[:space:]]*//' "$file" > "$V6_TMP/tls-patch" || :
+    sed '/^[[:space:]]*\/\//d' "$file" | jq --arg d "$dir" --arg s "$sni" '.inbounds |= map(
+      if .tls.enabled then .tls.server_name=$s |
+        if .tls.reality.enabled then .tls.reality.handshake.server=$s
+        else .tls.certificate_path=($d+"/cert/"+(if .type=="naive" then "cert_200.pem" else "cert.pem" end)) | .tls.key_path=($d+"/cert/private.key") end
+      elif .type=="shadowtls" then .handshake.server=$s else . end)' |
+      sed -E 's/^([[:space:]]*"[^"]+":) /\1/' >> "$V6_TMP/tls-patch" || return
+    mv "$V6_TMP/tls-patch" "$file"
+  done
+}
+v6_tls_manage() (
+  local family=$1 mode=${2:-tls} status=0
+  WORK_DIR="$V6_HOME/v$family"; DIR=$WORK_DIR; L=C; TEMP_DIR=$V6_TMP; IS_BRUTAL=false
+  [ ! -s "$WORK_DIR/client-fingerprint" ] || FINGER_PRINT=$(cat "$WORK_DIR/client-fingerprint")
+  [ -d "$WORK_DIR/conf" ] || { echo '该地址族尚未配置节点'; exit 0; }
+  local backup; backup=$(mktemp -d "$V6_TMP/tls-backup.XXXXXXXX")
+  cp -a "$WORK_DIR/." "$backup/"
+  trap 'code=$?; if [ "$code" != 0 ]; then rm -rf -- "$WORK_DIR"; cp -a "$backup" "$WORK_DIR"; v6_restart >/dev/null 2>&1 || :; echo "节点修改失败，已恢复该地址族的配置和证书" >&2; fi' EXIT
+  SBV6_TLS_MANAGEMENT=1; SBV6_NODE_MANAGEMENT=0
+  if [ "$mode" = nodes ]; then SBV6_TLS_MANAGEMENT=0; SBV6_NODE_MANAGEMENT=1; fi
+  # Keep the upstream change_config UI/validation and certificate implementation;
+  # route service changes to the isolated sbv6 instance only.
+  check_port_hopping_nat() { :; }
+  nginx_sync() { :; }
+  sync_firewall_rules() { v6_firewall; }
+  echo '{"experimental":{"clash_api":{}}}' > "$WORK_DIR/conf/04_experimental.json"
+  export_list() {
+    if [ "${KEY:-}" = serverip ]; then printf '%s\n' "$NEW_VAL" > "$WORK_DIR/host"; printf '%s\n' "$NEW_VAL" > "$WORK_DIR/advertised-host.override"; fi
+    return 0
+  }
+  cmd_systemctl() {
+    if [ "${KEY:-}" = sni ]; then v6_apply_tls_paths "$WORK_DIR" "$NEW_VAL" || return; fi
+    v6_merge || { status=1; return 1; }
+  }
+  change_config || status=1
+  [ "$status" != 0 ] || v6_merge || status=1
+  if [ "$status" != 0 ]; then
+    exit 1
+  fi
+  printf '%s\n' "$FINGER_PRINT" > "$WORK_DIR/client-fingerprint"
+)
+v6_manage_config() {
+  local family
+  read -r -p '管理节点地址族（4=IPv4 / 6=IPv6 / 0=返回）[6]: ' family; family=${family:-6}
+  [ "$family" != 0 ] || return 0
+  [[ "$family" = 4 || "$family" = 6 ]] || { echo '地址族无效'; return; }
+  echo '使用上游节点配置管理流程；修改后请重新导入节点。'
+  if v6_tls_manage "$family" nodes; then v6_firewall; v6_export "$family"; fi
 }
 v6_main() {
   UPSTREAM_URL=https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh
@@ -417,19 +604,17 @@ v6_main() {
   case "$action" in add) v6_add 6; return;; add4) v6_add 4; return;; both) v6_add both; return;; install) return;; esac
   while :; do
     v6_header
-    printf '\n1 上游原版菜单  2 添加IPv6  3 双栈添加  4 节点输出\n5 删除节点  6 同步  7 指定IPv6  8 状态  9 卸载\n10 安装/更新命令  11 参考/独立凭据  12 添加IPv4  0 退出\n'
+    printf '\n 1. 查看节点信息\n 2. 开启 / 关闭 sbv6 Sing-box\n 3. 开启 / 关闭上游 Argo\n 4. 更换上游 Argo 隧道\n 5. 修改节点配置 / IPv6 地址\n 6. 同步配置 / 自检修复\n 7. 查看系统与服务状态\n 8. 添加 / 删除协议（IPv4 / IPv6 / 双栈）\n 9. 卸载 sbv6\n10. 上游原版管理菜单\n11. 切换参考 / 独立凭据\n12. 更新 sbv6 脚本\n 0. 退出\n'
     read -r -p '选择: ' choice
     case "$choice" in
-      0) return;; 1) bash "$V6_HOME/sbv6.sh" --sb;; 2) v6_add 6;; 3) v6_add both;; 4) v6_outputs;;
-      5) local files=() i=0 id; mapfile -t files < <(find "$V6_HOME" -path '*/conf/*_inbounds.json' -type f | sort)
-         for file in "${files[@]}"; do echo "$((++i)) ${file##*/}"; done
-         read -r -p '删除编号（0取消）: ' id
-         if [[ "$id" =~ ^[1-9][0-9]*$ ]] && ((id<=${#files[@]})); then
-           read -r -p '确认删除？[y/N]: ' answer
-           if [ "$answer" = y ]; then cp "${files[id-1]}" "$V6_TMP/deleted"; rm "${files[id-1]}"; if v6_merge; then v6_firewall; else cp "$V6_TMP/deleted" "${files[id-1]}"; fi; fi
-         fi;;
-      6) v6_sync;; 7) read -r -p 'IPv6 节点地址（回车使用已识别地址）: ' answer; if v6_resolve_address 6 "$answer"; then echo "$V6_SELECTED_HOST" > "$V6_HOME/manual-ipv6"; v6_sync; fi;; 8) V6_NETWORK_FETCHED=0; v6_header; ss -lnut;;
-      9) echo '退出后运行 sbv6 -u 卸载';; 10) v6_ready;; 12) v6_add 4;;
+      0) return;; 1) v6_outputs;; 2) v6_toggle_service;;
+      3|4) if [ -x "$V6_UPSTREAM/cloudflared" ]; then
+             if [ "$choice" = 3 ]; then bash "$V6_HOME/sbv6.sh" --sb -a; else bash "$V6_HOME/sbv6.sh" --sb -t; fi
+           else echo '上游 Argo 未安装，可通过菜单 10 安装管理。'; fi;;
+      5) v6_manage_config;;
+      6) v6_sync;; 7) V6_NETWORK_FETCHED=0; v6_header; ss -lnut;; 8) v6_protocol_manager;;
+      9) flock -u 9; bash "$V6_HOME/sbv6.sh" -u; [ -d "$V6_HOME" ] || return; exec 9>"$V6_HOME/.lock"; flock -x 9;;
+      10) bash "$V6_HOME/sbv6.sh" --sb;; 12) v6_update_script;;
       11) if [ -f "$V6_HOME/independent" ]; then rm "$V6_HOME/independent"; echo '参考上游凭据'; else touch "$V6_HOME/independent"; echo '独立凭据（下次生成生效）'; fi;;
     esac
   done
