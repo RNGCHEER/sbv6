@@ -1,0 +1,12 @@
+
+
+PASS: SOCKS -> IPv6 hysteria2 -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 tuic -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 shadowsocks -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 trojan -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 vmess-ws -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 vless-ws-tls -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 anytls -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 naive -> local HTTP end-to-end
+PASS: SOCKS -> IPv6 snell-v6 -> local HTTP end-to-end
+PASS: all 13 server/client configurations; IPv6 TCP + UDP listeners; exports

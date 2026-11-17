@@ -1,0 +1,22 @@
+test_arguments_and_cleanup_on_failure (test_installer.InstallerTests.test_arguments_and_cleanup_on_failure) ... ok
+test_curl_process_substitution_entry (test_installer.InstallerTests.test_curl_process_substitution_entry) ... ok
+test_payload_preserves_interactive_stdin (test_installer.InstallerTests.test_payload_preserves_interactive_stdin) ... ok
+test_single_download_has_no_sibling_dependency (test_installer.InstallerTests.test_single_download_has_no_sibling_dependency) ... ok
+test_single_file_can_export_without_upstream (test_installer.InstallerTests.test_single_file_can_export_without_upstream) ... ok
+test_bootstrap_cancel_has_no_download (test_sbv6.CompanionTests.test_bootstrap_cancel_has_no_download) ... ok
+test_bootstrap_install_runs_official_installer (test_sbv6.CompanionTests.test_bootstrap_install_runs_official_installer) ... ok
+test_bootstrap_skip_never_runs_upstream_installer (test_sbv6.CompanionTests.test_bootstrap_skip_never_runs_upstream_installer) ... ok
+test_check_failure_does_not_publish (test_sbv6.CompanionTests.test_check_failure_does_not_publish) ... ok
+test_comment_parser_and_native_tag (test_sbv6.CompanionTests.test_comment_parser_and_native_tag) ... ok
+test_dual_stack_port_skip_and_credentials (test_sbv6.CompanionTests.test_dual_stack_port_skip_and_credentials) ... 跳过占用端口 8885
+ok
+test_idempotent_commit_and_subscription (test_sbv6.CompanionTests.test_idempotent_commit_and_subscription) ... ok
+test_pin_preserves_loopback_and_uninstall_restores (test_sbv6.CompanionTests.test_pin_preserves_loopback_and_uninstall_restores) ... ok
+test_readdress_only_ipv6 (test_sbv6.CompanionTests.test_readdress_only_ipv6) ... ok
+test_restart_failure_rolls_back (test_sbv6.CompanionTests.test_restart_failure_rolls_back) ... ok
+test_shadowtls_detours_are_unique_per_family (test_sbv6.CompanionTests.test_shadowtls_detours_are_unique_per_family) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.745s
+
+OK
