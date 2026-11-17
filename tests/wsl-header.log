@@ -1,0 +1,17 @@
+PASS public IPv4 metadata, IPv6 local fallback label and menu cache
+PASS unavailable service shown as not installed
+
+====================================================================
+ sbv6 · Bash + jq  |  基于 fscarmen/sing-box v1.3.30 (2026.11.15)
+ 系统信息：
+   操作系统：Debian GNU/Linux 13 (trixie)
+   内核：6.18.58.1-microsoft-standard-WSL2
+   架构：x86_64
+   虚拟化：wsl
+   IPv4：198.51.100.42  测试地区  测试 ISP
+   IPv6：fd00::123  （本机地址，公网探测未成功）
+   sbv6 Sing-box：未安装
+   上游 Sing-box：未安装
+   Argo：未安装
+   Nginx：未安装
+====================================================================

@@ -6764,6 +6764,75 @@ menu() {
 V6_HOME=${SBV6_DIR:-/etc/sbv6}
 V6_UPSTREAM=${SB_DIR:-/etc/sing-box}
 V6_CORE=${SB_BINARY:-$V6_HOME/sing-box}
+v6_probe_ip() {
+  local family=$1 endpoint result
+  ip -"$family" route get "$([ "$family" = 4 ] && echo 1.1.1.1 || echo 2606:4700:4700::1111)" >/dev/null 2>&1 || return 0
+  for endpoint in "${IP_API_NODES[@]}"; do
+    result=$(curl -"$family" -fsS --connect-timeout 1 --max-time 2 "$endpoint?lang=zh-CN" 2>/dev/null) || continue
+    if jq -e --arg f "$family" '.ip | strings | if $f=="6" then contains(":") else test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$") end' <<< "$result" >/dev/null 2>&1; then
+      printf '%s\n' "$result" > "$V6_TMP/ip$family.json"; return 0
+    fi
+  done
+  return 0
+}
+v6_network_info() {
+  [ "${V6_NETWORK_FETCHED:-0}" = 1 ] && return 0
+  v6_probe_ip 4 & local pid4=$!
+  v6_probe_ip 6 & local pid6=$!
+  wait "$pid4"; wait "$pid6"
+  local family info address localaddr
+  for family in 4 6; do
+    address=''; info=''
+    if [ -s "$V6_TMP/ip$family.json" ]; then
+      address=$(jq -r '.ip' "$V6_TMP/ip$family.json")
+      info=$(jq -r '[.country // empty, .isp // .org // empty] | join("  ")' "$V6_TMP/ip$family.json")
+    else
+      localaddr=$(ip -o -"$family" addr show scope global 2>/dev/null | awk '!/tentative|dadfailed/ {split($4,a,"/");print a[1];exit}')
+      [ -z "$localaddr" ] || { address=$localaddr; info='（本机地址，公网探测未成功）'; }
+    fi
+    printf -v "V6_PUBLIC$family" '%s' "${address:-未检测到}"
+    printf -v "V6_IPINFO$family" '%s' "$info"
+  done
+  V6_NETWORK_FETCHED=1
+}
+v6_service_summary() {
+  local name=$1 binary=$2 state='未运行' version='' pid='' memory=''
+  if [ ! -x "$binary" ] && ! command -v "$binary" >/dev/null 2>&1; then printf '未安装'; return; fi
+  if [ -d /run/systemd/system ]; then
+    if systemctl is-active --quiet "$name" 2>/dev/null; then
+      state='开启'; pid=$(systemctl show -p MainPID --value "$name" 2>/dev/null)
+    fi
+  elif command -v rc-service >/dev/null 2>&1; then
+    rc-service "$name" status >/dev/null 2>&1 && state='开启'
+    [ ! -r "/run/$name.pid" ] || read -r pid < "/run/$name.pid"
+  fi
+  case "$name" in
+    sbv6|sing-box) version=$("$binary" version 2>/dev/null | awk 'NR==1 {print $NF}') ;;
+    argo) version=$("$binary" --version 2>/dev/null | awk 'NR==1 {print $3}') ;;
+    nginx) version=$("$binary" -v 2>&1 | sed -n 's/.*nginx\///p') ;;
+  esac
+  if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -r "/proc/$pid/status" ]; then
+    memory=$(awk '/^VmRSS:/ {printf "  内存: %.1f MB",$2/1024}' "/proc/$pid/status")
+  fi
+  printf '%s  %s%s' "$state" "${version:+Version: $version}" "$memory"
+}
+v6_header() {
+  local os='未知系统' virt='未知' kernel arch color='' reset=''
+  if [ -r /etc/os-release ]; then os=$(. /etc/os-release; printf '%s' "${PRETTY_NAME:-$NAME}"); fi
+  kernel=$(uname -r); arch=$(uname -m)
+  if command -v systemd-detect-virt >/dev/null 2>&1; then virt=$(systemd-detect-virt 2>/dev/null) || virt=${virt:-物理机}; fi
+  v6_network_info
+  if [ -t 1 ]; then color=$'\033[1;32m'; reset=$'\033[0m'; fi
+  printf '\n%s====================================================================\n' "$color"
+  printf ' sbv6 · Bash + jq  |  基于 fscarmen/sing-box %s\n' "$VERSION"
+  printf ' 系统信息：\n   操作系统：%s\n   内核：%s\n   架构：%s\n   虚拟化：%s\n' "$os" "$kernel" "$arch" "$virt"
+  printf '   IPv4：%s  %s\n   IPv6：%s  %s\n' "$V6_PUBLIC4" "$V6_IPINFO4" "$V6_PUBLIC6" "$V6_IPINFO6"
+  printf '   sbv6 Sing-box：%s\n' "$(v6_service_summary sbv6 "$V6_CORE")"
+  printf '   上游 Sing-box：%s\n' "$(v6_service_summary sing-box "$V6_UPSTREAM/sing-box")"
+  printf '   Argo：%s\n' "$(v6_service_summary argo "$V6_UPSTREAM/cloudflared")"
+  printf '   Nginx：%s\n' "$(v6_service_summary nginx nginx)"
+  printf '====================================================================%s\n' "$reset"
+}
 v6_error() { printf '%s\n' "$*" >&2; return 1; }
 v6_dependencies() {
   local c missing=0
@@ -7048,7 +7117,7 @@ v6_main() {
   done
   [ "$(id -u)" = 0 ] || { v6_error '请以 root 运行'; return 1; }
   V6_TMP=$(mktemp -d /tmp/sbv6.XXXXXXXX); trap 'rm -rf -- "$V6_TMP"' EXIT
-  if [ "$action" = diag ]; then ip -6 addr; ip -6 route; return; fi
+  if [ "$action" = diag ]; then v6_header; ip -6 addr; ip -6 route; return; fi
   mkdir -p "$V6_HOME"; chmod 700 "$V6_HOME"; exec 9>"$V6_HOME/.lock"; flock -x 9
   if [ "$action" = list ]; then v6_outputs; return; fi
   if [ "$action" = uninstall ]; then
@@ -7063,6 +7132,7 @@ v6_main() {
   v6_ready || return; v6_migrate || return; v6_service || return
   case "$action" in add) v6_add 6; return;; both) v6_add both; return;; install) return;; esac
   while :; do
+    v6_header
     printf '\n1 上游原版菜单  2 添加IPv6  3 双栈添加  4 节点输出\n5 删除节点  6 同步  7 指定IPv6  8 状态  9 卸载\n10 安装/更新命令  11 参考/独立凭据  0 退出\n'
     read -r -p '选择: ' choice
     case "$choice" in
@@ -7074,7 +7144,7 @@ v6_main() {
            read -r -p '确认删除？[y/N]: ' answer
            if [ "$answer" = y ]; then cp "${files[id-1]}" "$V6_TMP/deleted"; rm "${files[id-1]}"; if v6_merge; then v6_firewall; else cp "$V6_TMP/deleted" "${files[id-1]}"; fi; fi
          fi;;
-      6) v6_sync;; 7) if answer=$(v6_choose); then echo "$answer" > "$V6_HOME/manual-ipv6"; v6_sync; fi;; 8) ss -lnut; cat "$V6_HOME"/v*/host 2>/dev/null;;
+      6) v6_sync;; 7) if answer=$(v6_choose); then echo "$answer" > "$V6_HOME/manual-ipv6"; v6_sync; fi;; 8) V6_NETWORK_FETCHED=0; v6_header; ss -lnut;;
       9) echo '退出后运行 sbv6 -u 卸载';; 10) v6_ready;;
       11) if [ -f "$V6_HOME/independent" ]; then rm "$V6_HOME/independent"; echo '参考上游凭据'; else touch "$V6_HOME/independent"; echo '独立凭据（下次生成生效）'; fi;;
     esac
