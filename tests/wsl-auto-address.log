@@ -1,0 +1,8 @@
+检测到容器/NAT IPv6：节点地址 2001:df4:3d40:0:f816:3eff:fef0:4051，本机监听 fd00::1266:6aff:fe63:20b2
+检测到容器/NAT IPv6：节点地址 2001:df4:3d40:0:f816:3eff:fef0:4051，本机监听 fd00::1266:6aff:fe63:20b2
+PASS screenshot case: public IPv6 auto-filled; ULA route source used for binding; same manual public input accepted
+填写的 IPv6 既非本机地址，也不匹配当前识别的公网 IPv6；请刷新状态后重试。
+PASS IPv4 WAN auto-fill without IPv6 dependency
+PASS noninteractive V6 and V4 additions: core config binds locally, native client output advertises detected WAN
+检测到容器/NAT IPv6：节点地址 2001:df4:3d40:0:f816:3eff:fef0:4052，本机监听 ::1
+PASS synchronization updates advertised public IPv6 separately from local binding

@@ -6858,6 +6858,37 @@ v6_detect() {
   [ -n "$fallback" ] && { echo "$fallback"; return; }
   return 1
 }
+v6_resolve_address() {
+  local family=$1 explicit=${2:-} host source localaddr info
+  v6_network_info
+  if [ "$family" = 4 ]; then
+    host=${explicit:-${V6_PUBLIC4:-}}
+    if ! [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "${V6_IPINFO4:-}" = *本机地址* && -z "$explicit" ]]; then
+      [ "$V6_INTERACTIVE" = 1 ] || { v6_error '未识别公网 IPv4，请使用 --ipv4 指定'; return 1; }
+      read -r -p '公网 IPv4（0取消）: ' host
+    fi
+    awk -F. 'NF!=4{exit 1} {for(i=1;i<=4;i++) if($i!~/^[0-9]+$/ || $i>255)exit 1}' <<< "$host" || { v6_error 'IPv4 格式无效'; return 1; }
+    V6_SELECTED_HOST=$host; V6_SELECTED_BIND=0.0.0.0; return
+  fi
+  host=$explicit
+  if [ -z "$host" ] && [[ "${V6_PUBLIC6:-}" = *:* && "${V6_IPINFO6:-}" != *本机地址* ]]; then host=$V6_PUBLIC6; fi
+  if [ -z "$host" ]; then host=$(v6_choose) || return; fi
+  host=${host#[}; host=${host%]}
+  if v6_addresses | grep -Fqx -- "$host"; then
+    V6_SELECTED_HOST=$host; V6_SELECTED_BIND=$host; return
+  fi
+  # A container/NAT public endpoint need not be assigned inside its network namespace.
+  if [ "$host" = "${V6_PUBLIC6:-}" ] && [[ "${V6_IPINFO6:-}" != *本机地址* && "$host" = *:* ]]; then
+    source=$(ip -6 route get 2606:4700:4700::1111 2>/dev/null | sed -n 's/.* src \([^ ]*\).*/\1/p' | head -1)
+    if [ -n "$source" ] && v6_addresses | grep -Fqx -- "$source"; then localaddr=$source
+    else localaddr=$(v6_addresses | awk '$0!="::1" && $0!~/^fe[89ab]/ {print;exit}'); fi
+    [ -n "$localaddr" ] || { v6_error '识别到公网 IPv6，但网卡没有可用 IPv6 监听地址'; return 1; }
+    V6_SELECTED_HOST=$host; V6_SELECTED_BIND=$localaddr
+    printf '检测到容器/NAT IPv6：节点地址 %s，本机监听 %s\n' "$host" "$localaddr"
+    return
+  fi
+  v6_error '填写的 IPv6 既非本机地址，也不匹配当前识别的公网 IPv6；请刷新状态后重试。'
+}
 v6_choose() {
   local answer=${1:-} result
   if [ -z "$answer" ]; then result=$(v6_detect) && { echo "$result"; return; }; fi
@@ -7054,8 +7085,17 @@ v6_clear_firewall() {
   done < <("$cmd" -w -S INPUT 2>/dev/null)
 }
 v6_add() {
-  local family=$1 addr keys=${V6_PROTOCOLS:-} port=${V6_PORT:-} name=${V6_NAME:-$(hostname)} f p max
-  addr=$(v6_choose "$V6_ADDRESS") || return
+  local family=$1 addr host6 host4 bind6 keys=${V6_PROTOCOLS:-} port=${V6_PORT:-} name=${V6_NAME:-$(hostname)} f p max
+  if [ "$family" != 4 ]; then
+    v6_resolve_address 6 "$V6_ADDRESS" || return
+    host6=$V6_SELECTED_HOST; bind6=$V6_SELECTED_BIND
+    printf 'IPv6 节点地址已自动填入：%s（监听 %s）\n' "$host6" "$bind6"
+  fi
+  if [ "$family" != 6 ]; then
+    v6_resolve_address 4 "$V6_IPV4" || return
+    host4=$V6_SELECTED_HOST
+    printf 'IPv4 节点地址已自动填入：%s\n' "$host4"
+  fi
   [ -n "$keys" ] || read -r -p '协议 b-n，a=全部 [a]: ' keys
   [ "${keys:-a}" != a ] || keys=bcdefghijklmn
   [[ "$keys" =~ ^[b-n]+$ ]] || { v6_error '协议字母无效'; return 1; }
@@ -7074,17 +7114,21 @@ v6_add() {
   rm -rf -- "$V6_TMP/backup6" "$V6_TMP/backup4"
   cp -a "$V6_HOME/v6" "$V6_TMP/backup6" 2>/dev/null || :
   cp -a "$V6_HOME/v4" "$V6_TMP/backup4" 2>/dev/null || :
-  v6_generate 6 "$addr" "$keys" "$port" "$name" || { v6_restore; return 1; }
-  if [ "$family" = both ]; then
-    [ -n "$V6_IPV4" ] || read -r -p '公网 IPv4: ' V6_IPV4
+  if [ "$family" != 4 ]; then
+    v6_generate 6 "$bind6" "$keys" "$port" "$name" || { v6_restore; return 1; }
+    echo "$host6" > "$V6_HOME/v6/host"; echo "$bind6" > "$V6_HOME/v6/bind"
+  fi
+  if [ "$family" != 6 ]; then
     v6_generate 4 0.0.0.0 "$keys" "$port" "$name" || { v6_restore; return 1; }
-    echo "$V6_IPV4" > "$V6_HOME/v4/host"
+    echo "$host4" > "$V6_HOME/v4/host"
   fi
   v6_merge || {
     v6_restore
     return 1
   }
-  if [ -n "$V6_ADDRESS" ] || ! v6_detect >/dev/null; then echo "$addr" > "$V6_HOME/manual-ipv6"; fi
+  if [ "$family" != 4 ]; then
+    if [ -n "$V6_ADDRESS" ]; then echo "$host6" > "$V6_HOME/manual-ipv6"; else rm -f "$V6_HOME/manual-ipv6"; fi
+  fi
   v6_firewall; v6_outputs
 }
 v6_restore() {
@@ -7094,14 +7138,16 @@ v6_restore() {
 v6_sync() {
   local addr file
   [ -d "$V6_HOME/v6/conf" ] || return 0
-  if [ -f "$V6_HOME/manual-ipv6" ]; then addr=$(v6_choose "$(cat "$V6_HOME/manual-ipv6")") || return
-  else addr=$(v6_detect) || { v6_error '未发现公网 IPv6，保留现有配置；菜单 7 可手动选择。'; return 1; }; fi
+  local explicit=''
+  [ ! -f "$V6_HOME/manual-ipv6" ] || explicit=$(cat "$V6_HOME/manual-ipv6")
+  v6_resolve_address 6 "$explicit" || return
+  addr=$V6_SELECTED_BIND
   for file in "$V6_HOME"/v6/conf/*_inbounds.json; do
     grep '^[[:space:]]*//' "$file" > "$V6_TMP/patch"
     sed '/^[[:space:]]*\/\//d' "$file" | jq --arg a "$addr" '.inbounds |= map(if .listen_port then .listen=$a else . end)' | sed -E 's/^([[:space:]]*"[^"]+":) /\1/' >> "$V6_TMP/patch" || return
     mv "$V6_TMP/patch" "$file"
   done
-  echo "$addr" > "$V6_HOME/v6/host"; v6_merge && v6_firewall
+  echo "$V6_SELECTED_HOST" > "$V6_HOME/v6/host"; echo "$addr" > "$V6_HOME/v6/bind"; v6_merge && v6_firewall
 }
 v6_main() {
   UPSTREAM_URL=https://raw.githubusercontent.com/fscarmen/sing-box/main/sing-box.sh
@@ -7109,8 +7155,8 @@ v6_main() {
   local action=menu choice file answer
   while [ $# -gt 0 ]; do
     case "$1" in
-      -h|--help) echo 'sbv6 (Bash + jq): -a 添加V6 -b 双栈 -l 节点 -s 同步 -d 诊断 -i 安装 -u 卸载 --sb 上游菜单'; return;;
-      -a) action=add;; -b) action=both;; -l) action=list;; -s) action=sync;; -d) action=diag;; -i) action=install;; -u) action=uninstall;;
+      -h|--help) echo 'sbv6 (Bash + jq): -a 添加V6 --v4 添加V4 -b 双栈 -l 节点 -s 同步 -d 诊断 -i 安装 -u 卸载 --sb 上游菜单'; return;;
+      -a) action=add;; --v4) action=add4;; -b) action=both;; -l) action=list;; -s) action=sync;; -d) action=diag;; -i) action=install;; -u) action=uninstall;;
       --ipv6) shift; V6_ADDRESS=$1;; --ipv4) shift; V6_IPV4=$1;; --protocols) shift; V6_PROTOCOLS=$1;; -p|--port) shift; V6_PORT=$1;; --name) shift; V6_NAME=$1;; --upstream) shift; V6_UPSTREAM_CHOICE=$1;;
       *) v6_error "未知参数 $1"; return 1;;
     esac; shift
@@ -7130,10 +7176,10 @@ v6_main() {
   [ "$action" != sync ] || { v6_sync; return; }
   [ "$action" != menu ] || V6_INTERACTIVE=1
   v6_ready || return; v6_migrate || return; v6_service || return
-  case "$action" in add) v6_add 6; return;; both) v6_add both; return;; install) return;; esac
+  case "$action" in add) v6_add 6; return;; add4) v6_add 4; return;; both) v6_add both; return;; install) return;; esac
   while :; do
     v6_header
-    printf '\n1 上游原版菜单  2 添加IPv6  3 双栈添加  4 节点输出\n5 删除节点  6 同步  7 指定IPv6  8 状态  9 卸载\n10 安装/更新命令  11 参考/独立凭据  0 退出\n'
+    printf '\n1 上游原版菜单  2 添加IPv6  3 双栈添加  4 节点输出\n5 删除节点  6 同步  7 指定IPv6  8 状态  9 卸载\n10 安装/更新命令  11 参考/独立凭据  12 添加IPv4  0 退出\n'
     read -r -p '选择: ' choice
     case "$choice" in
       0) return;; 1) bash "$V6_HOME/sbv6.sh" --sb;; 2) v6_add 6;; 3) v6_add both;; 4) v6_outputs;;
@@ -7144,8 +7190,8 @@ v6_main() {
            read -r -p '确认删除？[y/N]: ' answer
            if [ "$answer" = y ]; then cp "${files[id-1]}" "$V6_TMP/deleted"; rm "${files[id-1]}"; if v6_merge; then v6_firewall; else cp "$V6_TMP/deleted" "${files[id-1]}"; fi; fi
          fi;;
-      6) v6_sync;; 7) if answer=$(v6_choose); then echo "$answer" > "$V6_HOME/manual-ipv6"; v6_sync; fi;; 8) V6_NETWORK_FETCHED=0; v6_header; ss -lnut;;
-      9) echo '退出后运行 sbv6 -u 卸载';; 10) v6_ready;;
+      6) v6_sync;; 7) read -r -p 'IPv6 节点地址（回车使用已识别地址）: ' answer; if v6_resolve_address 6 "$answer"; then echo "$V6_SELECTED_HOST" > "$V6_HOME/manual-ipv6"; v6_sync; fi;; 8) V6_NETWORK_FETCHED=0; v6_header; ss -lnut;;
+      9) echo '退出后运行 sbv6 -u 卸载';; 10) v6_ready;; 12) v6_add 4;;
       11) if [ -f "$V6_HOME/independent" ]; then rm "$V6_HOME/independent"; echo '参考上游凭据'; else touch "$V6_HOME/independent"; echo '独立凭据（下次生成生效）'; fi;;
     esac
   done
