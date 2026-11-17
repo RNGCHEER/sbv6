@@ -7097,7 +7097,8 @@ v6_renew_naive() {
   v6_merge || { cp "$V6_TMP/naive-before.json" "$file"; return 1; }
 }
 v6_export() (
-  local family=$1 dir="$V6_HOME/v$1" file stage json cert key sni index=0 output clients=()
+  local family=$1 dir="$V6_HOME/v$1" file stage json cert key sni index=0 exported=0 summary_index=0 tag port outbounds output
+  local clients=() summaries=()
   [ -d "$dir/conf" ] || exit 0
   mkdir -p "$dir/subscribe"
   : > "$dir/list"; : > "$dir/nodes.txt"; : > "$dir/shadowrocket.txt"; : > "$dir/throne.txt"
@@ -7128,6 +7129,17 @@ v6_export() (
     [ -n "$sni" ] || sni=$(openssl x509 -noout -ext subjectAltName -in "$stage/cert/cert.pem" 2>/dev/null | awk -F'DNS:' '/DNS:/ {sub(/,.*/,"",$2);print $2}')
     sni=${sni:-addons.mozilla.org}
     v6_export_one "$stage" "$sni" > "$stage/display" || exit 1
+    # Upstream export_list returns one client bundle per staged protocol.  Do
+    # not silently report success when one item of a multi-selection vanished.
+    for output in list nodes.txt shadowrocket.txt throne.txt clash.yaml subscribe/sing-box; do
+      [ -s "$stage/$output" ] || { v6_error "协议导出不完整：${file##*/} 缺少 $output"; exit 1; }
+    done
+    outbounds=$(jq '[.outbounds[]? | select(.type != "direct")] | length' "$stage/subscribe/sing-box") || exit 1
+    ((outbounds > 0)) || { v6_error "协议导出不完整：${file##*/} 没有客户端节点"; exit 1; }
+    tag=$(jq -r '.inbounds[] | select(.listen_port) | .tag' <<< "$json" | head -1)
+    port=$(jq -r '.inbounds[] | select(.listen_port) | .listen_port' <<< "$json" | head -1)
+    summaries+=("${tag:-${file##*/}}|${port:-?}")
+    ((++exported))
     cat "$stage/display"
     cat "$stage/list" >> "$dir/list"
     cat "$stage/nodes.txt" >> "$dir/nodes.txt"
@@ -7140,6 +7152,10 @@ v6_export() (
   if [ ${#clients[@]} -gt 0 ]; then
     jq -s '{outbounds:([.[].outbounds[] | select(.type!="direct")]+[{type:"direct",tag:"direct"}])}' "${clients[@]}" > "$dir/subscribe/sing-box"
   else echo '{"outbounds":[{"type":"direct","tag":"direct"}]}' > "$dir/subscribe/sing-box"; fi
+  printf '\nIPv%s 节点导出完成：%d/%d\n' "$family" "$exported" "$index"
+  for output in "${summaries[@]}"; do
+    printf '  %d. %s（端口 %s）\n' "$((++summary_index))" "${output%|*}" "${output##*|}"
+  done
 )
 v6_outputs() {
   v6_export 4 || return

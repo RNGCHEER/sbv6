@@ -60,7 +60,7 @@ WSL 的 `tests/test-tls.sh` 已验证混合证书来源、真实 IPv6 Trojan 指
 
 节点名保持上游的“节点名 协议标签”，并加入 IPv4/IPv6 标识。两族使用各自配置目录；ShadowTLS 的 detour 标签按族隔离。参考模式复用上游对应协议凭据，独立模式重新生成。模式切换对后续添加生效。
 
-节点输出直接使用上游原版函数，包含 V2rayN、ShadowRocket、Clash Mihomo、Throne 和 sing-box。`/etc/sbv6/v4/`、`v6/` 中保存 list、nodes.txt、subscription.txt、clash.yaml 等；原生 sing-box 客户端配置位于各族 subscribe/sing-box。合并 URI 与 Base64 订阅在 `/etc/sbv6/nodes.txt` 和 subscription.txt。
+节点输出直接使用上游原版函数，包含 V2rayN、ShadowRocket、Clash Mihomo、Throne 和 sing-box。多选协议会逐个校验上述客户端产物，最后明确显示“已导出数量/已选择数量”及每个协议的名称、地址族和端口；任何一个协议缺少输出都会报错，不再把不完整结果显示为成功。`/etc/sbv6/v4/`、`v6/` 中保存 list、nodes.txt、subscription.txt、clash.yaml 等；原生 sing-box 客户端配置位于各族 subscribe/sing-box。合并 URI 与 Base64 订阅在 `/etc/sbv6/nodes.txt` 和 subscription.txt。
 
 ## 隔离与限制
 
@@ -78,6 +78,7 @@ WS 为直接 IPv6 连接，不自动创建 Argo/CDN。上游 WARP/分流不会�
 ```bash
 bash build-installer.sh
 bash tests/test-bash.sh
+bash tests/test-multi-select.sh
 ```
 
 WSL Debian + sing-box 1.15.0-alpha.13 实测：13 协议原生配置生成、14 入站（含 ShadowTLS 内层）及标签隔离、真实核心配置校验、IPv6 监听、原生多客户端输出、sing-box 客户端配置校验、旧版 JSON 迁移、无 IPv6 时手动输入与取消。记录见 tests/wsl-bash.log。测试不修改生产服务；核心放在 tests/bin/sing-box-1.15.0-alpha.13-linux-amd64/sing-box，不上传仓库。
