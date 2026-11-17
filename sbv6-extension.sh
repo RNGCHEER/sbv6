@@ -6,7 +6,7 @@ v6_probe_ip() {
   local family=$1 endpoint result
   ip -"$family" route get "$([ "$family" = 4 ] && echo 1.1.1.1 || echo 2606:4700:4700::1111)" >/dev/null 2>&1 || return 0
   for endpoint in "${IP_API_NODES[@]}"; do
-    result=$(curl -"$family" -fsS --connect-timeout 1 --max-time 2 "$endpoint?lang=zh-CN" 2>/dev/null) || continue
+    result=$(curl -q -"$family" -fsS --retry 0 --connect-timeout 1 --max-time 2 "$endpoint?lang=zh-CN" 2>/dev/null) || continue
     if jq -e --arg f "$family" '.ip | strings | if $f=="6" then contains(":") else test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$") end' <<< "$result" >/dev/null 2>&1; then
       printf '%s\n' "$result" > "$V6_TMP/ip$family.json"; return 0
     fi
